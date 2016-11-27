@@ -1,55 +1,70 @@
 package naoh.lamp
 
-import scala.xml.Elem
 import scala.xml.Node
 import scala.xml.NodeSeq
 import scala.xml.transform.RewriteRule
 
-case class Xe(
-  head: Lamp,
-  chain: Seq[Lamp]
+class Xe(
+  private val head: Lamp,
+  private val chain: Option[Xe]
 ) {
-  def \(label: String): Xe = \(Lamp(_.label == label, label))
+  def \(label: String): Xe = \(Lamp(_.label == label))
 
-  def \(lamp: Lamp): Xe = Xe(lamp, head +: chain)
+  private def \(lamp: Lamp): Xe = new Xe(lamp, Some(this))
 
-  def on(lamp: Lamp): Xe = Xe(head * lamp, chain)
+  def \(that: Xe): Xe = at(that)
 
-  def set(rep: NodeSeq)(src: Elem): Node = {
-    chain.foldLeft[RewriteRule](Leaf(rep, head))(ChainRule)(src)
+  def on(that: Xe): Xe = on(that.lamp)
+
+  def at(that: Xe): Xe = new Xe(that.head, Some(that.chain.fold(this)(at)))
+
+  def remove(src: Node): Node =
+    toRule(Replace(NodeSeq.Empty, head))(src)
+
+  def set(rep: NodeSeq)(src: Node): Node =
+    toRule(Replace(rep, head))(src)
+
+  def transform(rep: Node => NodeSeq)(src: Node): Node =
+    toRule(Transform(rep, head))(src)
+
+  def append(rep: NodeSeq)(src: Node): Node =
+    toRule(Append(rep, head))(src)
+
+  def find(src: Node): Seq[Node] =
+    chain.fold[Seq[Node]](Seq(src).filter(head.apply)) { xe =>
+      xe.find(src).flatMap(_.child.filter(head.apply))
+    }
+
+  def attr(key: String)(value: String => Boolean): Xe =
+    on(Lamp(_.attribute(key).exists(_.exists(n => value(n.text)))))
+
+  private def on(lamp: Lamp): Xe = new Xe(head && lamp, chain)
+
+  def text(str: String => Boolean): Xe =
+    on(Lamp(node => str(node.text)))
+
+  private def toRule(c: RewriteRule): RewriteRule =
+    chain.fold(c)(xe => xe.toRule(Chain(c, xe.head)))
+
+  private def lamp: Lamp = Lamp { node =>
+    chain.fold(head(node)) { xe =>
+      Seq(node).filter(xe.lamp.apply)
+        .flatMap(_.child).exists(head.apply)
+    }
   }
 }
 
 object Xe {
-  def \(label: String): Xe = Xe(Lamp(_.label == label, label), Seq.empty)
+  def \(label: String): Xe = new Xe(Lamp(_.label == label), None)
+
+  def \(lamp: Lamp): Xe = new Xe(lamp, None)
 }
 
-case class Lamp(cond: Node => Boolean, desc: String) {
+case class Lamp(cond: Node => Boolean) {
 
-  def *(that: Lamp): Lamp = Lamp(
-    node => cond(node) && that(node),
-    s"($desc && ${that.desc})")
+  def &&(that: Lamp): Lamp = Lamp {
+    node => cond(node) && that(node)
+  }
 
   def apply(node: Node): Boolean = cond(node)
-}
-
-case class Leaf(node: NodeSeq, lamp: Lamp) extends RewriteRule {
-  override def transform(n: Node): Seq[Node] = n match {
-    case elem@Elem(_, _, _, _, _*) if lamp(elem) =>
-      node
-    case other =>
-      println(s"X L ${lamp.desc} # ${other.label}")
-      other
-  }
-}
-
-case class ChainRule(nextRule: RewriteRule, lamp: Lamp) extends RewriteRule {
-  override def transform(n: Node): Seq[Node] = n match {
-    case elem@Elem(prefix, label, attr, scope, nodes@_*) if lamp(elem) =>
-      println(s"O CR ${lamp.desc} # $label")
-      Elem(prefix, label, attr, scope, true, nodes.flatMap(nextRule): _*)
-    case other =>
-      println(s"X CR ${lamp.desc} # ${other.label}")
-      other
-  }
 }
